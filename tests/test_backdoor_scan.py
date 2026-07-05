@@ -102,6 +102,9 @@ def _host_ok(host: str) -> bool:
         return True
     if host.startswith(("192.168.", "10.", "127.")):
         return True
+    # IANA-reserved documentation placeholders (never real destinations)
+    if host == "example.com" or host.endswith((".example.com", ".example.org", ".example.net")):
+        return True
     # build-time / template placeholders, not literal destinations
     if any(c in host for c in "{}$") or host.isupper() or "your_" in host:
         return True
