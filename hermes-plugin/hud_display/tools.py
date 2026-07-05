@@ -74,6 +74,16 @@ def hud_glance(args: dict, **kwargs) -> str:
     })
 
 
+def hud_status(args: dict, **kwargs) -> str:
+    """Show a LIVE mission-control board (host/worker CPU-GPU + token usage)."""
+    return _post({
+        "kind": "status",
+        "live": True,
+        "title": (args.get("title") or "SYSTEMS")[:48],
+        "position": args.get("position", "center"),
+    })
+
+
 def jarvis_say(args: dict, **kwargs) -> str:
     """Speak text aloud on the user's HUD, unprompted (out of a voice turn)."""
     text = (args.get("text") or "").strip()

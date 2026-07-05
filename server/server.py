@@ -28,6 +28,7 @@ import re
 import threading
 import time
 import uuid
+from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import AsyncIterator, Iterator
@@ -682,6 +683,26 @@ def get_pipeline() -> VoicePipelineServer:
     return PIPELINE
 
 
+_TTS_PIPELINE: VoicePipelineServer | None = None
+
+
+def get_tts_pipeline() -> VoicePipelineServer:
+    """A VoicePipelineServer WITHOUT the heavy STT recorder — enough for the
+    TTS-only path (proactive speech). Lets /api/say work even if the STT warm
+    failed or is still loading. Reuses the full pipeline if it already exists."""
+    global _TTS_PIPELINE
+    if PIPELINE is not None:
+        return PIPELINE
+    if _TTS_PIPELINE is None:
+        with _PIPELINE_LOCK:
+            if _TTS_PIPELINE is None and PIPELINE is None:
+                p = VoicePipelineServer.__new__(VoicePipelineServer)
+                p.cfg = CFG
+                p.turn_counter = 0
+                _TTS_PIPELINE = p
+    return PIPELINE or _TTS_PIPELINE
+
+
 app = FastAPI(title="Hermes Voice Pipeline")
 
 
@@ -978,6 +999,8 @@ def _panel_payload(panel: dict) -> dict:
             out["items"] = panel["items"][:30]
         if panel.get("chart_type") in ("bar", "line"):
             out["chart_type"] = panel["chart_type"]
+        if kind == "status" and panel.get("live"):
+            out["live"] = True                          # HUD composes from /api/machines + /api/usage
     return out
 
 
@@ -999,7 +1022,7 @@ async def speak_broadcast(text: str, *, priority: str = "normal", panel: dict | 
         return {"spoke": False, "sent_to": 0, "reason": "empty after redaction"}
     if not WS_CLIENTS:
         return {"spoke": False, "sent_to": 0, "warning": "no HUD screens open"}
-    pipeline = get_pipeline()
+    pipeline = get_tts_pipeline()  # TTS-only: no STT recorder needed to speak
     prio = "high" if priority == "high" else "normal"
     spk_id = f"spk_{uuid.uuid4().hex[:8]}"
     timing = TurnTiming(turn_id=pipeline.next_turn_id())
@@ -1041,6 +1064,23 @@ async def speak_broadcast(text: str, *, priority: str = "normal", panel: dict | 
     return {"spoke": True, "id": spk_id, "sent_to": n, "chars": len(clean)}
 
 
+_SAY_TIMES: deque = deque()
+_SAY_LOCK = threading.Lock()
+
+
+def _rate_ok(limit: int, now: float, window: float = 60.0) -> bool:
+    """Sliding-window limiter for proactive speech. limit<=0 disables it."""
+    if limit <= 0:
+        return True
+    with _SAY_LOCK:
+        while _SAY_TIMES and now - _SAY_TIMES[0] > window:
+            _SAY_TIMES.popleft()
+        if len(_SAY_TIMES) >= limit:
+            return False
+        _SAY_TIMES.append(now)
+        return True
+
+
 @app.post("/api/notify")
 @app.post("/api/say")
 async def say(request: Request) -> JSONResponse:
@@ -1056,6 +1096,9 @@ async def say(request: Request) -> JSONResponse:
     text = (body.get("text") or "").strip()
     if not text:
         return JSONResponse({"error": "empty text"}, status_code=400)
+    limit = int((CFG.get("proactive") or {}).get("max_per_minute", 30) or 0)
+    if not _rate_ok(limit, time.time()):
+        return JSONResponse({"error": "rate limited"}, status_code=429)
     if len(text) > 1200:
         return JSONResponse({"error": "text too long (max 1200 chars)"}, status_code=400)
     priority = "high" if body.get("priority") == "high" else "normal"
@@ -1273,6 +1316,14 @@ _STRIP_HEADERS = {"x-frame-options", "content-security-policy", "content-length"
                   "transfer-encoding", "connection", "content-encoding"}
 
 
+def _frame_ancestors_csp() -> str:
+    """CSP that lets ONLY the HUD origins iframe the proxied dashboard (F4:
+    replaces blanket CSP-stripping — the HUD can still embed it, arbitrary
+    sites cannot -> anti-clickjacking)."""
+    srcs = " ".join(f"https://{h}" for h in sorted(ALLOWED_ORIGIN_HOSTS))
+    return f"frame-ancestors 'self' {srcs}".strip()
+
+
 @dash_app.middleware("http")
 async def dash_auth_middleware(request: Request, call_next):
     if not _request_authed(request):
@@ -1340,6 +1391,7 @@ async def dash_http_proxy(path: str, request: Request) -> Response:
 
     resp = await asyncio.to_thread(do_request)
     out_headers = {k: v for k, v in resp.headers.items() if k.lower() not in _STRIP_HEADERS}
+    out_headers["content-security-policy"] = _frame_ancestors_csp()  # scoped, not stripped (F4)
     return Response(content=resp.content, status_code=resp.status_code, headers=out_headers)
 
 
@@ -1511,10 +1563,33 @@ async def websocket_endpoint(ws: WebSocket) -> None:
         WS_CLIENTS.discard(ws)
 
 
+def _security_startup_check(host: str) -> None:
+    """F3: fail closed (or warn loudly) when the server is network-exposed with
+    no HUD token. `security.require_token: true` makes it a hard error."""
+    sec = CFG.get("security") or {}
+    token = hud_token()
+    loopback = host in ("127.0.0.1", "localhost", "::1")
+    if token:
+        return
+    if sec.get("require_token"):
+        raise SystemExit(
+            "SECURITY: security.require_token is set but no HUD token is configured "
+            f"({sec.get('hud_token_env', 'JARVIS_HUD_TOKEN')} is empty). Refusing to start."
+        )
+    if not loopback:
+        print("=" * 72, flush=True)
+        print("SECURITY WARNING: no HUD token set and the server binds a non-loopback", flush=True)
+        print(f"  address ({host}). The /api surface, /api/say, and the dashboard proxy", flush=True)
+        print("  are OPEN to anyone on the LAN. Set JARVIS_HUD_TOKEN (see server.yaml", flush=True)
+        print("  security.hud_token_env) or set security.require_token: true.", flush=True)
+        print("=" * 72, flush=True)
+
+
 def main() -> int:
     server = CFG["server"]
     host = server.get("host", "0.0.0.0")
     port = int(server.get("port", 8765))
+    _security_startup_check(host)
     tls_ports = server.get("tls_ports") or ([server["tls_port"]] if server.get("tls_port") else [])
     cert = server.get("tls_cert")
     key = server.get("tls_key")

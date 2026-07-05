@@ -116,6 +116,18 @@ def test_notify_alias_reaches_same_handler(no_token, client):
     assert r.status_code == 400  # same empty-text validation as /api/say
 
 
+def test_say_rate_limited(no_token, server_mod, client, monkeypatch):
+    monkeypatch.setitem(server_mod.CFG, "proactive", {"max_per_minute": 1})
+    server_mod._SAY_TIMES.clear()
+    try:
+        r1 = client.post("/api/say", json={"text": "one"})   # counts (no clients -> 200)
+        r2 = client.post("/api/say", json={"text": "two"})   # over the cap
+        assert r1.status_code == 200
+        assert r2.status_code == 429
+    finally:
+        server_mod._SAY_TIMES.clear()
+
+
 # --------------------------------------------------------------------------- #
 # Rich data panels via /api/summon (kind = chart/glance)                       #
 # --------------------------------------------------------------------------- #

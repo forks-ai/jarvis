@@ -25,8 +25,14 @@ TTS. See `tests/test_backdoor_scan.py` (enforced continuously).
 - **F2 — FIXED**: `_ws_allowed` now requires the token for Origin-less clients
   when one is configured (`?token=` / cookie); native clients (`client.py`,
   `ws_e2e_test.py`) updated to pass it.
-- **F3, F4 — still open** (auth-off-by-default posture; dashboard proxy exposure).
-  Tracked below; not addressed in this change.
+- **F3 — MITIGATED** (`feat-hardening-and-polish`): `_security_startup_check`
+  refuses to start on a non-loopback bind with no token when
+  `security.require_token: true`, and prints a loud warning otherwise. Default
+  posture is unchanged (opt-in) to avoid breaking existing LAN deploys.
+- **F4 — MITIGATED**: the dashboard proxy no longer blanket-strips CSP; it now
+  injects `Content-Security-Policy: frame-ancestors 'self' <HUD origins>`, so the
+  HUD can still embed the dashboard but arbitrary sites cannot (anti-clickjacking).
+  Unit test `test_frame_ancestors_scopes_to_hud_origins`.
 
 ## Findings
 

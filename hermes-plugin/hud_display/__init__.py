@@ -13,3 +13,5 @@ def register(ctx):
                       schema=schemas.HUD_CHART, handler=tools.hud_chart)
     ctx.register_tool(name="hud_glance", toolset="hud",
                       schema=schemas.HUD_GLANCE, handler=tools.hud_glance)
+    ctx.register_tool(name="hud_status", toolset="hud",
+                      schema=schemas.HUD_STATUS, handler=tools.hud_status)

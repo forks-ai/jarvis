@@ -26,7 +26,12 @@ curl -H "Authorization: Bearer $KEY" http://127.0.0.1:8642/health
 Recommended: add voice-behavior rules to your global `~/.hermes/SOUL.md`
 (short spoken sentences, no markdown aloud, never speak secrets, announce risky
 actions and wait for approval). The agent — not the voice server — should own
-its personality.
+its personality. A ready-made J.A.R.V.I.S. persona ships in
+[`hermes-plugin/SOUL.jarvis.md`](../hermes-plugin/SOUL.jarvis.md):
+
+```bash
+cat hermes-plugin/SOUL.jarvis.md >> ~/.hermes/SOUL.md
+```
 
 ## 2. ElevenLabs (the voice)
 

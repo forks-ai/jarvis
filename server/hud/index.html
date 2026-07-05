@@ -378,6 +378,17 @@ const feed=$("feed");
 /* HTML-escape for any server/agent-supplied string rendered via innerHTML (XSS guard) */
 const escHtml=s=>String(s??"").replace(/[<>&"']/g,c=>({"<":"&lt;",">":"&gt;","&":"&amp;",'"':"&quot;","'":"&#39;"}[c]));
 const isHttpUrl=u=>/^https?:\/\//i.test(String(u||""));
+/* Browser autoplay needs a prior user gesture; nudge once if proactive audio
+   arrives while the context is still suspended, and unlock on the next input. */
+let _audioNudged=false;
+function audioNudge(){
+  if(_audioNudged) return;
+  if(audioCtx && audioCtx.state==="running") return;
+  _audioNudged=true;
+  addMsg("sys","🔊 Click anywhere to enable Jarvis audio.");
+  const unlock=()=>{ ensureCtx(); document.removeEventListener("click",unlock); document.removeEventListener("keydown",unlock); };
+  document.addEventListener("click",unlock); document.addEventListener("keydown",unlock);
+}
 
 /* ============================== clock ============================== */
 setInterval(()=>{const d=new Date();$("clock").textContent=d.toTimeString().slice(0,8)},500);
@@ -501,7 +512,7 @@ function connect(){
     else if(e.type==="dismiss_panels"){ dismissAllPanels(); }
     else if(e.type==="speak_start"){        // proactive (unprompted) speech
       if(e.priority==="high") stopPlayback();   // barge-in over current audio
-      ensureCtx(); earcon("chime");
+      ensureCtx(); audioNudge(); earcon("chime");
       if(e.text) addMsg("jarvis", e.text);      // subtitle (textContent — XSS-safe)
       setState("speaking","INCOMING");
     }
@@ -855,6 +866,31 @@ function renderKV(o){
   return `<div class="holoContent holoData holoKV">${rows.map(r=>
     `<div class="kv"><span>${escHtml(r.label??"")}</span><b>${escHtml(String(r.value??""))}</b></div>`).join("")}</div>`;
 }
+/* live "mission-control" status: composed from the existing /api endpoints */
+async function fillLiveStatus(el){
+  if(!el) return;
+  try{
+    const [m,u]=await Promise.all([
+      fetch("/api/machines").then(r=>r.json()).catch(()=>({})),
+      fetch("/api/usage").then(r=>r.json()).catch(()=>({})),
+    ]);
+    const rows=[];
+    (m.machines||[]).forEach(x=>{
+      const bits=[];
+      if(x.cpu!=null)bits.push(`CPU ${Math.round(x.cpu)}%`);
+      if(x.mem!=null)bits.push(`MEM ${Math.round(x.mem)}%`);
+      if(x.gpu_util!=null)bits.push(`GPU ${Math.round(x.gpu_util)}%`);
+      rows.push({label:x.name||"machine", value:bits.join(" · ")||(x.online?"online":"offline")});
+    });
+    const t=(u.llm&&u.llm.today)||{};
+    rows.push({label:"Tokens today", value:`${fmtK(t.llm_in||0)} in / ${fmtK(t.llm_out||0)} out`});
+    rows.push({label:"Turns today", value:t.turns||0});
+    const e=u.elevenlabs;
+    if(e&&e.limit) rows.push({label:"11Labs quota", value:`${fmtK(e.used)} / ${fmtK(e.limit)}`});
+    el.innerHTML=rows.map(r=>
+      `<div class="kv"><span>${escHtml(r.label)}</span><b>${escHtml(String(r.value))}</b></div>`).join("");
+  }catch{ el.textContent="unavailable"; }
+}
 let lastSummon={key:"",t:0};
 function summonPanel(opts){
   const o=opts||{};
@@ -872,6 +908,7 @@ function summonPanel(opts){
   let inner="";
   const esrc=encodeURI(src);                       // escapes quotes/space/angle brackets
   if(kind==="chart") inner=renderChart(o);
+  else if(kind==="status" && o.live) inner=`<div class="holoContent holoData holoKV" data-live="1">syncing systems…</div>`;
   else if(kind==="glance"||kind==="status") inner=renderKV(o);
   else if(media==="image") inner=`<img class="holoContent" src="${esrc}" alt="">`;
   else if(media==="video" && !/youtube|youtu\.be/.test(src))
@@ -893,6 +930,7 @@ function summonPanel(opts){
     <div class="holoChroma c2"></div>
     <div class="holoBoot"></div>`;
   $("holoStage").appendChild(p);
+  if(kind==="status" && o.live) fillLiveStatus(p.querySelector('[data-live]'));
   holoWhoosh(true);
   // camera dolly: the whole HUD recedes briefly while the panel arrives
   document.getElementById("grid").classList.add("dolly");

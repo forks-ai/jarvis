@@ -151,7 +151,7 @@ def test_proactive_say_broadcasts_speech(no_token, server_mod, monkeypatch):
     frame, then speak_end — Jarvis speaking OUTSIDE a voice turn."""
     from fastapi.testclient import TestClient
 
-    monkeypatch.setattr(server_mod, "get_pipeline", lambda: FakePipeline())
+    monkeypatch.setattr(server_mod, "get_tts_pipeline", lambda: FakePipeline())
     hud = _FakeHud()
     server_mod.WS_CLIENTS.add(hud)
     client = TestClient(server_mod.app)
@@ -171,7 +171,7 @@ def test_proactive_say_broadcasts_speech(no_token, server_mod, monkeypatch):
 
 
 def test_proactive_say_with_panel_broadcasts_panel(no_token, server_mod, monkeypatch):
-    monkeypatch.setattr(server_mod, "get_pipeline", lambda: FakePipeline())
+    monkeypatch.setattr(server_mod, "get_tts_pipeline", lambda: FakePipeline())
     hud = _FakeHud()
     server_mod.WS_CLIENTS.add(hud)
     client = TestClient(server_mod.app)
@@ -189,7 +189,7 @@ def test_proactive_say_with_panel_broadcasts_panel(no_token, server_mod, monkeyp
 
 def test_proactive_say_rejects_non_http_panel(no_token, server_mod, monkeypatch):
     """Security: a javascript:/attribute-breakout panel src is NOT broadcast."""
-    monkeypatch.setattr(server_mod, "get_pipeline", lambda: FakePipeline())
+    monkeypatch.setattr(server_mod, "get_tts_pipeline", lambda: FakePipeline())
     hud = _FakeHud()
     server_mod.WS_CLIENTS.add(hud)
     client = TestClient(server_mod.app)
