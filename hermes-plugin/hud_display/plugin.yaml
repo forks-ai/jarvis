@@ -1,9 +1,10 @@
 name: hud_display
-version: 1.1.0
-description: Display media as holographic panels on the Jarvis HUD, and speak proactively
+version: 1.2.0
+description: Display media/data panels on the Jarvis HUD, speak proactively, and show live status
 provides_tools:
   - hud_display
   - hud_dismiss
   - jarvis_say
   - hud_chart
   - hud_glance
+  - hud_status

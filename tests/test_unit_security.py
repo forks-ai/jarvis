@@ -133,6 +133,86 @@ def test_panel_payload_rejects_unknown_kind(server_mod):
     assert "kind" not in out
 
 
+def test_panel_payload_status_live_flag(server_mod):
+    assert server_mod._panel_payload({"kind": "status", "title": "S", "live": True}).get("live") is True
+    # live is a status-only affordance
+    assert "live" not in server_mod._panel_payload({"kind": "glance", "title": "S", "live": True})
+
+
+# --------------------------------------------------------------------------- #
+# _rate_ok — proactive-speech sliding-window limiter                            #
+# --------------------------------------------------------------------------- #
+def test_rate_ok_disabled_when_zero(server_mod):
+    server_mod._SAY_TIMES.clear()
+    assert server_mod._rate_ok(0, 100.0) is True
+    assert server_mod._rate_ok(-5, 100.0) is True
+
+
+def test_rate_ok_enforces_window(server_mod):
+    server_mod._SAY_TIMES.clear()
+    assert server_mod._rate_ok(2, 100.0) is True
+    assert server_mod._rate_ok(2, 100.5) is True
+    assert server_mod._rate_ok(2, 101.0) is False   # 3rd within the 60s window
+    assert server_mod._rate_ok(2, 200.0) is True     # window has slid past
+    server_mod._SAY_TIMES.clear()
+
+
+# --------------------------------------------------------------------------- #
+# _frame_ancestors_csp — dashboard proxy anti-clickjacking (F4)                #
+# --------------------------------------------------------------------------- #
+def test_frame_ancestors_scopes_to_hud_origins(server_mod):
+    csp = server_mod._frame_ancestors_csp()
+    assert csp.startswith("frame-ancestors 'self'")
+    assert "https://jarvis.local" in csp
+    assert "*" not in csp
+
+
+# --------------------------------------------------------------------------- #
+# _security_startup_check — fail-closed / warn (F3)                            #
+# --------------------------------------------------------------------------- #
+def test_startup_check_require_token_raises(no_token, server_mod, monkeypatch):
+    monkeypatch.setitem(server_mod.CFG, "security",
+                        {"require_token": True, "hud_token_env": "JARVIS_HUD_TOKEN"})
+    with pytest.raises(SystemExit):
+        server_mod._security_startup_check("0.0.0.0")
+
+
+def test_startup_check_warns_but_starts(no_token, server_mod, monkeypatch, capsys):
+    monkeypatch.setitem(server_mod.CFG, "security", {"require_token": False})
+    assert server_mod._security_startup_check("0.0.0.0") is None
+    assert "SECURITY WARNING" in capsys.readouterr().out
+
+
+def test_startup_check_silent_on_loopback(no_token, server_mod, monkeypatch):
+    monkeypatch.setitem(server_mod.CFG, "security", {"require_token": False})
+    assert server_mod._security_startup_check("127.0.0.1") is None
+
+
+def test_startup_check_silent_with_token(with_token, server_mod, monkeypatch):
+    monkeypatch.setitem(server_mod.CFG, "security", {"require_token": True})
+    assert server_mod._security_startup_check("0.0.0.0") is None  # token present -> fine
+
+
+# --------------------------------------------------------------------------- #
+# get_tts_pipeline — TTS-only path (no STT recorder)                            #
+# --------------------------------------------------------------------------- #
+def test_tts_pipeline_has_no_recorder(server_mod):
+    saved_p, saved_t = server_mod.PIPELINE, server_mod._TTS_PIPELINE
+    server_mod.PIPELINE = None
+    server_mod._TTS_PIPELINE = None
+    try:
+        p = server_mod.get_tts_pipeline()
+        assert hasattr(p, "cfg")
+        assert not hasattr(p, "recorder")  # decoupled from STT
+    finally:
+        server_mod.PIPELINE, server_mod._TTS_PIPELINE = saved_p, saved_t
+
+
+# --------------------------------------------------------------------------- #
+# _extract_complete_sentences — streaming correctness                          #
+# --------------------------------------------------------------------------- #
+
+
 def test_proxy_post_only_v1_responses(server_mod):
     assert server_mod._proxy_allowed("POST", "/v1/responses") is True
     assert server_mod._proxy_allowed("POST", "/api/sessions") is False

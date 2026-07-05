@@ -95,6 +95,24 @@ HUD_GLANCE = {
     },
 }
 
+HUD_STATUS = {
+    "name": "hud_status",
+    "description": (
+        "Show a LIVE mission-control / systems board on the user's Jarvis HUD — "
+        "host and worker CPU/GPU/memory plus today's token usage, composed live "
+        "from the server's own telemetry. Use when the user asks to 'show system "
+        "status / diagnostics / how the machines are doing' on screen. No data "
+        "needed; it self-populates."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "title": {"type": "string", "description": "Panel title (default SYSTEMS)"},
+            "position": {"type": "string", "enum": ["center", "left", "right"]},
+        },
+    },
+}
+
 JARVIS_SAY = {
     "name": "jarvis_say",
     "description": (
