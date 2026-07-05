@@ -307,10 +307,10 @@ footer{
   <!-- RIGHT COLUMN -->
   <div class="col">
     <div class="panel"><h2><span>MODELS LOADOUT</span><span class="num">06</span></h2>
-      <div class="kv"><span>Brain</span><b>hermes-agent</b></div>
-      <div class="kv"><span>STT</span><b>whisper base.en</b></div>
-      <div class="kv"><span>TTS</span><b>ElevenLabs Flash v2.5</b></div>
-      <div class="kv"><span>Fallback</span><b>claude-haiku-4-5</b></div>
+      <div class="kv"><span>Brain</span><b id="mdBrain">hermes-agent</b></div>
+      <div class="kv"><span>STT</span><b id="mdStt">whisper base.en</b></div>
+      <div class="kv"><span>TTS</span><b id="mdTts">ElevenLabs Flash v2.5</b></div>
+      <div class="kv"><span>Fallback</span><b id="mdFallback">claude-haiku-4-5</b></div>
       <div style="border-top:1px solid var(--line); margin:6px 0 4px"></div>
       <div class="kv"><span>Tokens today</span><b id="uTok">—</b></div>
       <div class="kv" id="uCostRow" style="display:none"><span>Est. cost today</span><b id="uCost">—</b></div>
@@ -614,7 +614,11 @@ $("reactorWrap").onclick=toggleTalk;
 $("stopBtn").onclick=stopRun;
 
 /* ---- pop-up viewer ---- */
-const DASH_PROXY=`https://${location.hostname}:9443`;
+// Default matches this server's own dashboard_proxy (same host, configured
+// port); overridden by refreshModels() if server.dashboard_proxy.external_url
+// is set (e.g. deployments that front the Hermes dashboard with an external
+// reverse proxy instead of this server's built-in TLS dashboard_proxy).
+let DASH_PROXY=`https://${location.hostname}:9443`;
 function openView(name,path){
   $("viewerTitle").textContent=name;
   $("viewerIframe").src=DASH_PROXY+path;
@@ -723,7 +727,21 @@ async function refreshUsage(){
     }
   }catch{}
 }
-refreshHealth();refreshSkills();refreshJobs();refreshMachines();refreshUsage();
+async function refreshModels(){
+  // Populates MODELS LOADOUT from the live config instead of leaving the
+  // panel's hardcoded placeholder text, and applies a dashboard_proxy_url
+  // override for the VIEWS panel if the deployment set one.
+  try{
+    const r=await fetch("/api/config-summary"); const j=await r.json();
+    if(j.brain)$("mdBrain").textContent=j.brain;
+    if(j.stt_model)$("mdStt").textContent=`${j.stt_model} (${j.stt_language||"auto"})`;
+    if(j.tts_model)$("mdTts").textContent=j.tts_model;
+    if(j.fallback_model)$("mdFallback").textContent=j.fallback_model;
+    if(j.dashboard_proxy_url) DASH_PROXY=j.dashboard_proxy_url;
+    else if(j.dashboard_proxy_port) DASH_PROXY=`https://${location.hostname}:${j.dashboard_proxy_port}`;
+  }catch{}
+}
+refreshHealth();refreshSkills();refreshJobs();refreshMachines();refreshUsage();refreshModels();
 setInterval(refreshUsage,60000);
 setInterval(refreshHealth,15000); setInterval(refreshJobs,60000); setInterval(refreshMachines,10000);
 setInterval(refreshSkills,120000);
