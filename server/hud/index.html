@@ -501,7 +501,7 @@ function connect(){
     else if(e.type==="dismiss_panels"){ dismissAllPanels(); }
     else if(e.type==="speak_start"){        // proactive (unprompted) speech
       if(e.priority==="high") stopPlayback();   // barge-in over current audio
-      ensureCtx();
+      ensureCtx(); earcon("chime");
       if(e.text) addMsg("jarvis", e.text);      // subtitle (textContent — XSS-safe)
       setState("speaking","INCOMING");
     }
@@ -511,14 +511,14 @@ function connect(){
     else if(e.type==="partial_transcript"){ showLive(e.text); }
     else if(e.type==="transcript"){ clearLive(); if(e.text)addMsg("you",e.text); }
     else if(e.type==="run_started"){ currentRun=e.run_id; showStop(true); }
-    else if(e.type==="approval_request"){ showApproval(e); }
+    else if(e.type==="approval_request"){ earcon("alert"); showApproval(e); }
     else if(e.type==="agent_status"){
       if(e.state==="thinking"){setState("thinking","PROCESSING");showStop(true)}
       else if(e.state==="tool_use"){setState("tool","WORKING");addActivity("",e.tool||"tool",e.preview)}
       else if(e.state==="speaking")setState("speaking","SPEAKING");
       else if(e.state==="stopped"){setState("standby","STANDBY");showStop(false);stopPlayback();addMsg("sys","run stopped")}
     }
-    else if(e.type==="error"){ clearLive(); addMsg("sys","error: "+e.message); setState("standby","STANDBY"); showStop(false); }
+    else if(e.type==="error"){ earcon("error"); clearLive(); addMsg("sys","error: "+e.message); setState("standby","STANDBY"); showStop(false); }
     else if(e.type==="done"){
       currentRun=null; showStop(false);
       const tm=e.timing||{};
@@ -623,7 +623,7 @@ async function toggleTalk(){
   stopPlayback();                       // barge-in
   audioArrived=false;
   ws.send(JSON.stringify({type:"start",sample_rate:16000,format:"pcm_s16le",channels:1,conversation:CONV}));
-  capturing=true;
+  capturing=true; earcon("listen");
   $("talkBtn").textContent="■ STOP & SEND"; $("micState").textContent="LIVE";
   setState("listening","LISTENING","CLICK AGAIN TO SEND");
 }
@@ -745,6 +745,33 @@ refreshHealth();refreshSkills();refreshJobs();refreshMachines();refreshUsage();
 setInterval(refreshUsage,60000);
 setInterval(refreshHealth,15000); setInterval(refreshJobs,60000); setInterval(refreshMachines,10000);
 setInterval(refreshSkills,120000);
+
+/* ====================== earcons (UI sound cues) ==================== */
+// Short synthesized tones for key events. WebAudio only (no assets, CSP-safe);
+// silent until the audio context is unlocked by a user gesture.
+const EARCONS={
+  listen:{seq:[[660,0],[990,.06]],type:"sine",dur:.16,gain:.06},
+  alert: {seq:[[880,0],[880,.14]],type:"triangle",dur:.3,gain:.09},
+  error: {seq:[[300,0],[180,.10]],type:"sawtooth",dur:.28,gain:.07},
+  chime: {seq:[[520,0],[780,.05],[1040,.10]],type:"sine",dur:.22,gain:.05},
+};
+function earcon(kind){
+  const spec=EARCONS[kind]; if(!spec) return;
+  try{
+    ensureCtx();
+    if(!audioCtx || audioCtx.state!=="running") return;   // needs prior user gesture
+    const t0=audioCtx.currentTime, g=audioCtx.createGain();
+    g.gain.setValueAtTime(.0001,t0);
+    g.gain.exponentialRampToValueAtTime(spec.gain,t0+.02);
+    g.gain.exponentialRampToValueAtTime(.0001,t0+spec.dur);
+    g.connect(audioCtx.destination);
+    for(const [f,dt] of spec.seq){
+      const o=audioCtx.createOscillator(); o.type=spec.type;
+      o.frequency.setValueAtTime(f,t0+dt); o.connect(g);
+      o.start(t0+dt); o.stop(t0+spec.dur);
+    }
+  }catch{}
+}
 
 /* ====================== holographic media panels ==================== */
 function holoWhoosh(up=true){

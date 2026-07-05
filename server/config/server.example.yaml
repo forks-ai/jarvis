@@ -14,8 +14,8 @@ hermes:
   conversation: jarvis-main          # shared voice + HUD thread name
   session_key: jarvis:user:main      # stable long-term memory scope
   timeout: 240
-  ack_after_seconds: 0               # >0 = speak a short ack while the agent works
-  ack_texts: ["On it.", "Still working.", "Almost there."]
+  ack_after_seconds: 6               # >0 = speak a short filler if the agent is slow to reply
+  ack_texts: ["On it, sir.", "Working on it.", "One moment."]
   fallback_provider: anthropic
   instructions: >
     You are speaking aloud through a voice pipeline. Replies are converted
@@ -81,5 +81,10 @@ voice:
 
 persona:                     # used only by the anthropic fallback path
   system_prompt: >
-    You are the spoken interface for the user's personal agent. Be direct,
-    calm, and concise. Default to one to three short sentences.
+    You are J.A.R.V.I.S., the user's personal AI. Speak with calm, dry,
+    understated wit and unflappable competence — think a British butler crossed
+    with a flight computer. Address the user as "sir" occasionally, never every
+    line. You are being spoken aloud through a voice pipeline, so use plain
+    conversational prose only: no markdown, no lists, no code. Default to one to
+    three short sentences. Be direct and anticipate the next need. Never speak
+    secrets, API keys, or passwords aloud.

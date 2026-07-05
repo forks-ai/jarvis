@@ -51,6 +51,10 @@ The HUD around the ring is a real control center:
 - **Machines panel** — live CPU/GPU stats for the host and remote workers
 - **Cinematic boot** — press `B`: panels flicker in, ring spins up,
   "Systems online. Good morning."
+- **Persona + earcons** — a dry, butler-flavored J.A.R.V.I.S. voice (fallback
+  persona), synthesized UI sound cues on listen/alert/error/incoming-speech,
+  and a spoken "on it, sir" filler if the agent takes a beat to reply
+  (`hermes.ack_after_seconds`)
 - **Privacy filter** — secret-shaped strings are redacted before any text
   reaches cloud TTS
 - **Optional GPU ears** — point it at any NVIDIA machine on your LAN running
