@@ -1,0 +1,10 @@
+# Test-only dependencies. The heavy runtime deps (RealtimeSTT/whisper/torch,
+# anthropic, uvicorn) are STUBBED in conftest.py, so they are NOT needed to run
+# the suite — it runs offline with no GPU and no cloud keys.
+pytest>=8
+fastapi>=0.110
+httpx<0.28          # Starlette TestClient transport
+pyyaml
+numpy
+requests
+websockets
