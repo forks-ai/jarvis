@@ -475,6 +475,16 @@ class VoicePipelineServer:
 
     # ------------------------------------------------------------- Turn flow
 
+    def _ack_config(self) -> tuple[float, str | None]:
+        """(delay_seconds, filler_text) for the 'agent is slow' spoken ack, or
+        (0, None) when disabled. Wires hermes.ack_after_seconds / ack_texts."""
+        h = self.cfg.get("hermes") or {}
+        after = float(h.get("ack_after_seconds", 0) or 0)
+        texts = h.get("ack_texts") or []
+        if after <= 0 or not texts:
+            return (0.0, None)
+        return (after, self._clean_for_tts(str(texts[0])) or None)
+
     async def stream_response_audio(
         self, ws: WebSocket, transcript: str, timing: TurnTiming, conn: "ConnState",
     ) -> None:
@@ -484,6 +494,7 @@ class VoicePipelineServer:
         await ws.send_json({"type": "agent_status", "state": "thinking"})
 
         q: asyncio.Queue = asyncio.Queue()
+        tts_lock = asyncio.Lock()  # serialise ack vs real sentences (no interleaved PCM)
 
         async def forward() -> None:
             try:
@@ -493,7 +504,20 @@ class VoicePipelineServer:
             except Exception as exc:
                 await q.put(exc)
 
+        ack_after, ack_text = self._ack_config()
+
+        async def ack_filler() -> None:
+            try:
+                await asyncio.sleep(ack_after)
+                async with tts_lock:
+                    if not spoken:  # free var -> sees the loop's updates
+                        await ws.send_json({"type": "agent_status", "state": "speaking"})
+                        await self._send_tts_sentence(ws, ack_text, timing)
+            except (asyncio.CancelledError, Exception):
+                pass
+
         forward_task = asyncio.create_task(forward())
+        ack_task = asyncio.create_task(ack_filler()) if ack_text else None
         try:
             while True:
                 item = await q.get()
@@ -531,16 +555,20 @@ class VoicePipelineServer:
                         continue
                     if timing.first_sentence_monotonic is None:
                         timing.first_sentence_monotonic = time.perf_counter()
-                    if not spoken:
-                        await ws.send_json({"type": "agent_status", "state": "speaking"})
-                        spoken = True
                     conn.spoken_sentences.append(clean)
-                    await self._send_tts_sentence(ws, clean, timing)
+                    async with tts_lock:
+                        if not spoken:
+                            await ws.send_json({"type": "agent_status", "state": "speaking"})
+                            spoken = True
+                        await self._send_tts_sentence(ws, clean, timing)
             tail = self._clean_for_tts(pending.strip())
             if tail:
                 conn.spoken_sentences.append(tail)
-                await self._send_tts_sentence(ws, tail, timing)
+                async with tts_lock:
+                    await self._send_tts_sentence(ws, tail, timing)
         finally:
+            if ack_task and not ack_task.done():
+                ack_task.cancel()
             if not forward_task.done():
                 forward_task.cancel()
         timing.response_text = "".join(full_response).strip()

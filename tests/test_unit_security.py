@@ -195,6 +195,37 @@ def test_ws_browser_allowed_origin_needs_token(with_token):
 
 
 # --------------------------------------------------------------------------- #
+# _ack_config — "agent is slow" spoken filler wiring                           #
+# --------------------------------------------------------------------------- #
+def _pipeline_with_cfg(server_mod, cfg):
+    p = server_mod.VoicePipelineServer.__new__(server_mod.VoicePipelineServer)
+    p.cfg = cfg
+    return p
+
+
+def test_ack_disabled_by_default(server_mod):
+    assert _pipeline_with_cfg(server_mod, {"hermes": {}})._ack_config() == (0.0, None)
+
+
+def test_ack_disabled_when_no_texts(server_mod):
+    p = _pipeline_with_cfg(server_mod, {"hermes": {"ack_after_seconds": 6, "ack_texts": []}})
+    assert p._ack_config() == (0.0, None)
+
+
+def test_ack_enabled(server_mod):
+    p = _pipeline_with_cfg(server_mod, {"hermes": {"ack_after_seconds": 6, "ack_texts": ["On it, sir."]}})
+    assert p._ack_config() == (6.0, "On it, sir.")
+
+
+def test_ack_filler_is_secret_redacted(server_mod):
+    # ack text flows through _clean_for_tts, so a secret in it is still redacted.
+    p = _pipeline_with_cfg(server_mod, {"hermes": {"ack_after_seconds": 3,
+                                                   "ack_texts": ["key sk-abcdefabcdefabcdef123"]}})
+    _, text = p._ack_config()
+    assert "redacted" in text
+
+
+# --------------------------------------------------------------------------- #
 # _extract_complete_sentences — streaming correctness                          #
 # --------------------------------------------------------------------------- #
 def test_extract_complete_sentences(server_mod):
