@@ -333,12 +333,19 @@ footer{
     </div>
     <div class="panel"><h2><span>DIAGNOSTICS</span><span class="num">09</span></h2>
       <div class="kv"><span><span class="dot" id="apiDot"></span>Hermes API</span><b id="apiState">—</b></div>
+      <div class="kv"><span><span class="dot" id="elevenDot"></span>11Labs API</span><b id="elevenState">—</b></div>
       <div class="kv"><span>CPU</span><b id="hCpu">—</b></div>
       <div class="kv"><span>Memory</span><b id="hMem">—</b></div>
       <div class="kv"><span>Refreshed</span><b id="hWhen">—</b></div>
     </div>
     <div class="panel"><h2><span>AUTOMATIONS</span><span class="num">10</span></h2>
       <div id="jobsList"><div>—</div></div>
+    </div>
+    <div class="panel"><h2><span>WEATHER</span><span class="num">11</span></h2>
+      <div class="kv"><span>Local</span><b id="wxLabel">not configured</b></div>
+      <div class="kv"><span>Temp</span><b id="wxTemp">—</b></div>
+      <div class="kv"><span>Cond.</span><b id="wxCond">—</b></div>
+      <div class="kv"><span>Wind</span><b id="wxWind">—</b></div>
     </div>
   </div>
 
@@ -745,6 +752,10 @@ async function refreshUsage(){
     if(j.llm?.today_cost!=null){$("uCostRow").style.display="flex";$("uCost").textContent="$"+j.llm.today_cost.toFixed(2)}
     const e=j.elevenlabs;
     if(e&&e.limit){
+      // Quota check succeeded (key has user_read permission) — upgrade the
+      // DIAGNOSTICS dot from "configured" (set by refreshModels, below) to a
+      // verified-reachable "online".
+      $("elevenDot").className="dot on"; $("elevenState").textContent="online";
       const pct=Math.round(e.used/e.limit*100);
       $("uTts").textContent=`${fmtK(e.used)} / ${fmtK(e.limit)} (${100-pct}% left)`;
       $("ttsBar").style.width=pct+"%";
@@ -768,10 +779,49 @@ async function refreshModels(){
     if(j.fallback_model)$("mdFallback").textContent=j.fallback_model;
     if(j.dashboard_proxy_url) DASH_PROXY=j.dashboard_proxy_url;
     else if(j.dashboard_proxy_port) DASH_PROXY=`https://${location.hostname}:${j.dashboard_proxy_port}`;
+    // Baseline DIAGNOSTICS state from static config (TTS configured or not).
+    // Some ElevenLabs keys are scoped to text_to_speech only and can't pass
+    // the /api/usage quota check (needs user_read) — refreshUsage() upgrades
+    // this to "online" only if that check actually succeeds, so a narrowly
+    // scoped-but-working key still reads as "configured" instead of a
+    // misleading "offline".
+    $("elevenDot").className=j.tts_model?"dot on":"dot off";
+    $("elevenState").textContent=j.tts_model?"configured":"not set";
   }catch{}
 }
-refreshHealth();refreshSkills();refreshJobs();refreshMachines();refreshUsage();refreshModels();
+const WMO_COND={0:"Clear sky",1:"Mostly clear",2:"Partly cloudy",3:"Overcast",
+  45:"Fog",48:"Rime fog",51:"Light drizzle",53:"Drizzle",55:"Dense drizzle",
+  56:"Freezing drizzle",57:"Dense freezing drizzle",61:"Light rain",63:"Rain",65:"Heavy rain",
+  66:"Freezing rain",67:"Heavy freezing rain",71:"Light snow",73:"Snow",75:"Heavy snow",
+  77:"Snow grains",80:"Light showers",81:"Showers",82:"Violent showers",
+  85:"Snow showers",86:"Heavy snow showers",95:"Thunderstorm",96:"Thunderstorm w/ hail",99:"Severe thunderstorm w/ hail"};
+let WX_CFG=null;
+async function refreshWeather(){
+  // Optional panel: only active if hud/weather-config.json exists (copy
+  // hud/weather-config.example.json and fill in your coordinates). No API
+  // key needed — Open-Meteo is free and CORS-open, queried directly from the
+  // browser. Silently stays "not configured" if the file is absent.
+  try{
+    if(WX_CFG===null){
+      const c=await fetch("weather-config.json");
+      if(!c.ok){ WX_CFG=false; return; }
+      WX_CFG=await c.json();
+      $("wxLabel").textContent=WX_CFG.label||"—";
+    }
+    if(!WX_CFG) return;
+    const u=`https://api.open-meteo.com/v1/forecast?latitude=${WX_CFG.lat}&longitude=${WX_CFG.lon}`+
+      `&current=temperature_2m,weather_code,wind_speed_10m&timezone=${encodeURIComponent(WX_CFG.timezone||"auto")}`;
+    const r=await fetch(u); const j=await r.json(); const cur=j.current||{};
+    const unit=WX_CFG.unit==="f"?"°F":"°C";
+    const temp=WX_CFG.unit==="f"&&cur.temperature_2m!=null?(cur.temperature_2m*9/5+32):cur.temperature_2m;
+    $("wxTemp").textContent=temp!=null?Math.round(temp)+unit:"—";
+    $("wxCond").textContent=WMO_COND[cur.weather_code]||"—";
+    $("wxWind").textContent=cur.wind_speed_10m!=null?Math.round(cur.wind_speed_10m)+" km/h":"—";
+  }catch{ if(WX_CFG){ $("wxTemp").textContent="—"; $("wxCond").textContent="offline"; $("wxWind").textContent="—"; } }
+}
+refreshHealth();refreshSkills();refreshJobs();refreshMachines();refreshUsage();refreshModels();refreshWeather();
 setInterval(refreshUsage,60000);
+setInterval(refreshWeather,900000);
 setInterval(refreshHealth,15000); setInterval(refreshJobs,60000); setInterval(refreshMachines,10000);
 setInterval(refreshSkills,120000);
 

@@ -6,6 +6,7 @@ server/certs/
 server/logs/
 server/hud/audio/
 server/hud/jarvis.cer
+server/hud/weather-config.json
 
 # worker local files
 worker/run-stt.bat
