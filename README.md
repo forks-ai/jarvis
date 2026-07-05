@@ -39,6 +39,14 @@ The HUD around the ring is a real control center:
   materializes through a scanline, and plays the video. The agent drives it
   through a bundled Hermes plugin (`hud_display`); panels can fly into
   left/right thirds, and "clear the screen" sweeps them away
+- **Proactive speech** — Jarvis talks *unprompted*. `POST /api/say` (or the
+  `jarvis_say` agent tool) synthesizes and speaks on every open HUD outside a
+  turn — reminders, alerts, "the build finished, sir" — with `priority:high` to
+  barge in. A built-in scheduler fires spoken morning/evening briefings whose
+  content the agent generates (`proactive:` in `server.yaml`)
+- **Data panels** — beyond media, the agent can throw up inline bar/line
+  **charts** (`hud_chart`) and key/value **status boards** (`hud_glance`) —
+  rendered as SVG in-panel, no external site
 - **Usage tracking** — tokens/day, turns, ElevenLabs quota bar
 - **Machines panel** — live CPU/GPU stats for the host and remote workers
 - **Cinematic boot** — press `B`: panels flicker in, ring spins up,

@@ -16,9 +16,21 @@ TTS. See `tests/test_backdoor_scan.py` (enforced continuously).
 
 ---
 
+## Status (update)
+
+- **F1 — FIXED** (`feat-proactive-jarvis`): `summonPanel` now HTML-escapes
+  `title` (`escHtml`) and `encodeURI`s / scheme-validates `src`; the new
+  chart/glance renderers escape all agent-supplied labels/values; server clamps
+  panel fields. Regression guards in `tests/test_security_exploits.py`.
+- **F2 — FIXED**: `_ws_allowed` now requires the token for Origin-less clients
+  when one is configured (`?token=` / cookie); native clients (`client.py`,
+  `ws_e2e_test.py`) updated to pass it.
+- **F3, F4 — still open** (auth-off-by-default posture; dashboard proxy exposure).
+  Tracked below; not addressed in this change.
+
 ## Findings
 
-### F1 — Stored/DOM XSS in the HUD via `/api/summon` (HIGH, confidence 9/10)
+### F1 — Stored/DOM XSS in the HUD via `/api/summon` (HIGH, confidence 9/10) — FIXED
 
 `server/hud/index.html:788` and `:779`; server relay `server/server.py:863-887`.
 
@@ -54,7 +66,7 @@ already do with `encodeURI`; validate `media`/`position`/`src` server-side in
 
 ---
 
-### F2 — WebSocket token gate bypassed by Origin-less clients (MEDIUM, 9/10)
+### F2 — WebSocket token gate bypassed by Origin-less clients (MEDIUM, 9/10) — FIXED
 
 `server/server.py:700-712` (`_ws_allowed`).
 

@@ -27,6 +27,7 @@ import os
 import re
 import threading
 import time
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import AsyncIterator, Iterator
@@ -51,6 +52,7 @@ CONFIG_PATH = ROOT / "config" / "server.yaml"
 LOG_PATH = ROOT / "logs" / "latency.jsonl"
 STATE_PATH = ROOT / "logs" / "hermes_sessions.json"
 USAGE_PATH = ROOT / "logs" / "usage_stats.json"
+FIRED_PATH = ROOT / "logs" / "proactive_fired.json"  # scheduler "already fired today" guard
 _USAGE_LOCK = threading.Lock()
 
 
@@ -697,19 +699,29 @@ async def api_auth_middleware(request: Request, call_next):
     return await call_next(request)
 
 
+def _ws_has_token(ws: WebSocket, token: str) -> bool:
+    return ws.cookies.get("jarvis_token") == token or ws.query_params.get("token") == token
+
+
 def _ws_allowed(ws: WebSocket) -> bool:
-    """Browsers send Origin (+cookie); native clients (PTT, tests) send neither."""
+    """Browsers send Origin (+cookie); native clients (PTT, tests) send neither.
+
+    When a token is configured it is required for EVERY client — including
+    Origin-less native clients, which must pass ?token=... (closes the
+    Origin-less bypass, security finding F2). With no token the LAN is open."""
+    token = hud_token()
     origin = ws.headers.get("origin")
     if not origin:
-        return True  # non-browser client on the LAN (Python PTT, e2e tests)
+        # Native client (Python PTT, e2e tests). Open only if no token is set;
+        # otherwise it must supply the token via query param or cookie.
+        return True if not token else _ws_has_token(ws, token)
     from urllib.parse import urlparse
     host = (urlparse(origin).hostname or "").lower()
     if host not in ALLOWED_ORIGIN_HOSTS:
         return False
-    token = hud_token()
     if not token:
         return True
-    return ws.cookies.get("jarvis_token") == token or ws.query_params.get("token") == token
+    return _ws_has_token(ws, token)
 
 
 # --------------------------------------------------------------- HUD + proxy
@@ -860,6 +872,27 @@ async def usage() -> JSONResponse:
 WS_CLIENTS: set = set()
 
 
+async def _broadcast_json(payload: dict) -> int:
+    """Send a JSON event to every connected HUD; drop sockets that error."""
+    sent = 0
+    for client in list(WS_CLIENTS):
+        try:
+            await client.send_json(payload)
+            sent += 1
+        except Exception:
+            WS_CLIENTS.discard(client)
+    return sent
+
+
+async def _broadcast_bytes(chunk: bytes) -> None:
+    """Send a binary (PCM audio) frame to every connected HUD."""
+    for client in list(WS_CLIENTS):
+        try:
+            await client.send_bytes(chunk)
+        except Exception:
+            WS_CLIENTS.discard(client)
+
+
 @app.post("/api/summon")
 async def summon(request: Request) -> JSONResponse:
     """Broadcast a holographic media panel to all connected HUD clients.
@@ -872,19 +905,223 @@ async def summon(request: Request) -> JSONResponse:
     if body.get("action") == "dismiss":
         payload = {"type": "dismiss_panels"}
     else:
-        payload = {"type": "summon_panel",
-                   "media": body.get("media") or body.get("type") or "iframe",
-                   "src": body.get("src", ""),
-                   "title": body.get("title", "INCOMING FEED"),
-                   "position": body.get("position", "center")}
-    sent = 0
-    for client in list(WS_CLIENTS):
-        try:
-            await client.send_json(payload)
-            sent += 1
-        except Exception:
-            WS_CLIENTS.discard(client)
+        payload = {"type": "summon_panel", **_panel_payload(body)}
+    sent = await _broadcast_json(payload)
     return JSONResponse({"sent_to": sent})
+
+
+# ---------------------------------------------------- proactive speech (/api/say)
+
+_PANEL_KINDS = ("chart", "glance", "status")
+
+
+def _panel_payload(panel: dict) -> dict:
+    """Normalise a panel spec to the summon_panel wire shape (server-side clamp;
+    the HUD additionally HTML-escapes title and validates src on render).
+
+    Beyond media panels (video/iframe/image) this also carries "data" panels
+    (kind in chart/glance/status) whose numbers/rows the HUD renders as inline
+    SVG/kv — no external libraries, CSP-safe."""
+    media = panel.get("media") or panel.get("type") or "iframe"
+    if media not in ("video", "iframe", "image"):
+        media = "iframe"
+    position = panel.get("position", "center")
+    if position not in ("left", "right", "center"):
+        position = "center"
+    out = {
+        "media": media,
+        "src": str(panel.get("src", "")).strip(),
+        "title": str(panel.get("title", "INCOMING FEED"))[:80],
+        "position": position,
+    }
+    kind = panel.get("kind")
+    if kind in _PANEL_KINDS:
+        out["kind"] = kind
+        if isinstance(panel.get("data"), list):
+            out["data"] = panel["data"][:60]           # bound payload size
+        if isinstance(panel.get("items"), list):
+            out["items"] = panel["items"][:30]
+        if panel.get("chart_type") in ("bar", "line"):
+            out["chart_type"] = panel["chart_type"]
+    return out
+
+
+def _panel_valid(panel: dict) -> bool:
+    """A panel is only shown if its src is a real http(s) URL (defence in depth)."""
+    return str(panel.get("src", "")).strip().lower().startswith(("http://", "https://"))
+
+
+async def speak_broadcast(text: str, *, priority: str = "normal", panel: dict | None = None) -> dict:
+    """Synthesize `text` via the normal TTS path and broadcast the audio to every
+    open HUD OUTSIDE a voice turn — this is how Jarvis speaks unprompted.
+
+    Reuses the exact turn pipeline: _clean_for_tts (secret redaction) ->
+    tts_chunks_sync (which records usage) -> binary PCM the HUD already plays.
+    Framed by speak_start / speak_end JSON events so the HUD can barge-in or
+    queue. No audience -> no synthesis (don't spend TTS on nobody)."""
+    clean = VoicePipelineServer._clean_for_tts(text)
+    if not clean:
+        return {"spoke": False, "sent_to": 0, "reason": "empty after redaction"}
+    if not WS_CLIENTS:
+        return {"spoke": False, "sent_to": 0, "warning": "no HUD screens open"}
+    pipeline = get_pipeline()
+    prio = "high" if priority == "high" else "normal"
+    spk_id = f"spk_{uuid.uuid4().hex[:8]}"
+    timing = TurnTiming(turn_id=pipeline.next_turn_id())
+    timing.transcript = "[proactive]"
+    timing.end_of_speech_monotonic = time.perf_counter()
+
+    n = await _broadcast_json({"type": "speak_start", "id": spk_id, "text": clean,
+                               "priority": prio, "panel": bool(panel)})
+    if panel and _panel_valid(panel):
+        await _broadcast_json({"type": "summon_panel", **_panel_payload(panel)})
+
+    q: asyncio.Queue = asyncio.Queue()
+    loop = asyncio.get_running_loop()
+
+    def worker() -> None:
+        try:
+            for chunk in pipeline.tts_chunks_sync(clean, timing):
+                loop.call_soon_threadsafe(q.put_nowait, chunk)
+            loop.call_soon_threadsafe(q.put_nowait, None)
+        except Exception as exc:
+            loop.call_soon_threadsafe(q.put_nowait, exc)
+
+    worker_task = asyncio.create_task(asyncio.to_thread(worker))
+    try:
+        while True:
+            item = await q.get()
+            if item is None:
+                break
+            if isinstance(item, Exception):
+                raise item
+            await _broadcast_bytes(item)
+        await worker_task
+    finally:
+        if not worker_task.done():
+            worker_task.cancel()
+        timing.total_done_monotonic = time.perf_counter()
+        await _broadcast_json({"type": "speak_end", "id": spk_id})
+        pipeline.log_turn(timing)
+    return {"spoke": True, "id": spk_id, "sent_to": n, "chars": len(clean)}
+
+
+@app.post("/api/notify")
+@app.post("/api/say")
+async def say(request: Request) -> JSONResponse:
+    """Make Jarvis speak aloud on every open HUD, unprompted.
+
+    Body: {"text": "...", "priority": "normal"|"high",
+           "panel": {"media","src","title","position"}?}
+    Auth is inherited from api_auth_middleware (path is under /api/)."""
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON"}, status_code=400)
+    text = (body.get("text") or "").strip()
+    if not text:
+        return JSONResponse({"error": "empty text"}, status_code=400)
+    if len(text) > 1200:
+        return JSONResponse({"error": "text too long (max 1200 chars)"}, status_code=400)
+    priority = "high" if body.get("priority") == "high" else "normal"
+    panel = body.get("panel") if isinstance(body.get("panel"), dict) else None
+    try:
+        result = await speak_broadcast(text, priority=priority, panel=panel)
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=502)
+    return JSONResponse(result)
+
+
+# ------------------------------------------------- proactive scheduler (briefings)
+
+def _load_fired() -> set:
+    """Keys already fired today (survives restarts so a mid-day bounce won't re-fire)."""
+    try:
+        data = json.loads(FIRED_PATH.read_text(encoding="utf-8"))
+        if data.get("day") == _today():
+            return set(data.get("keys", []))
+    except Exception:
+        pass
+    return set()
+
+
+def _save_fired(keys: set) -> None:
+    FIRED_PATH.parent.mkdir(parents=True, exist_ok=True)
+    FIRED_PATH.write_text(json.dumps({"day": _today(), "keys": sorted(keys)}), encoding="utf-8")
+
+
+def _hermes_oneshot(prompt: str, conversation: str) -> str:
+    """One-shot agent turn -> joined text (reuses the hud_chat consume() logic)."""
+    timeout = float((CFG.get("hermes") or {}).get("timeout", 240))
+
+    def consume(sid: str) -> list[str]:
+        parts: list[str] = []
+        for kind, value in HERMES.chat_stream_events(sid, prompt, timeout):
+            if kind == "text":
+                parts.append(value)
+            elif kind == "final":
+                info = json.loads(value)
+                if info.get("content"):
+                    parts = [info["content"]]
+        return parts
+
+    try:
+        parts = consume(HERMES.get_session_id(conversation))
+    except RuntimeError as exc:
+        if "404" not in str(exc):
+            raise
+        parts = consume(HERMES.get_session_id(conversation, force_new=True))
+    return "".join(parts).strip()
+
+
+async def _run_briefing(entry: dict) -> None:
+    if not WS_CLIENTS:
+        return  # nobody watching -> skip (also avoids TTS spend)
+    prompt = entry.get("prompt") or "Give me a brief spoken update."
+    conversation = entry.get("conversation") or (CFG.get("hermes") or {}).get("conversation", "jarvis-main")
+    priority = "high" if entry.get("priority") == "high" else "normal"
+    try:
+        text = await asyncio.to_thread(_hermes_oneshot, prompt, conversation)
+    except Exception as exc:
+        print(f"Proactive briefing (hermes) failed: {exc}", flush=True)
+        return
+    if text:
+        await speak_broadcast(text, priority=priority)
+
+
+async def _scheduler_loop() -> None:
+    """Tick every 30 s; fire schedule entries whose HH:MM matches, once per day."""
+    schedule = (CFG.get("proactive") or {}).get("schedule") or []
+    while True:
+        try:
+            now = time.strftime("%H:%M")
+            fired = _load_fired()
+            for i, entry in enumerate(schedule):
+                at = str(entry.get("at", ""))
+                key = f"{i}|{at}"
+                if at == now and key not in fired:
+                    fired.add(key)
+                    _save_fired(fired)
+                    asyncio.create_task(_run_briefing(entry))
+        except Exception as exc:
+            print(f"Proactive scheduler error: {exc}", flush=True)
+        await asyncio.sleep(30)
+
+
+_SCHED_STARTED = False
+
+
+@app.on_event("startup")
+async def start_scheduler() -> None:
+    """Launch the proactive scheduler once (fires once per uvicorn listener)."""
+    global _SCHED_STARTED
+    if _SCHED_STARTED:
+        return
+    _SCHED_STARTED = True
+    cfg = CFG.get("proactive") or {}
+    if cfg.get("enabled") and (cfg.get("schedule") or []):
+        asyncio.get_running_loop().create_task(_scheduler_loop())
+        print(f"Proactive scheduler started ({len(cfg['schedule'])} entries).", flush=True)
 
 
 _WORKER_CACHE: dict = {"ts": 0.0, "data": [], "refreshing": False}

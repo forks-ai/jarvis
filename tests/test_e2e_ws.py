@@ -11,6 +11,7 @@ from __future__ import annotations
 import contextlib
 
 import pytest
+from fastapi.testclient import TestClient
 
 
 class FakePipeline:
@@ -35,6 +36,10 @@ class FakePipeline:
         await ws.send_json({"type": "agent_status", "state": "speaking"})
         await ws.send_bytes(b"\x11\x11\x22\x22")  # fake 16-bit PCM
         timing.response_text = f"echo:{transcript}"
+
+    def tts_chunks_sync(self, text, timing):  # used by proactive speak_broadcast
+        yield b"\xaa\xbb" * 8
+        yield b"\xcc\xdd" * 8
 
     def log_turn(self, timing) -> None:
         return None
@@ -126,3 +131,75 @@ def test_approval_without_run_errors(fake_pipeline_client):
         err = ws.receive_json()
         assert err["type"] == "error"
         assert "No run for approval" in err["message"]
+
+
+class _FakeHud:
+    """Captures broadcast events + audio frames without a real socket."""
+    def __init__(self):
+        self.events = []
+        self.audio = 0
+
+    async def send_json(self, payload):
+        self.events.append(payload)
+
+    async def send_bytes(self, chunk):
+        self.audio += 1
+
+
+def test_proactive_say_broadcasts_speech(no_token, server_mod, monkeypatch):
+    """POST /api/say with a HUD connected -> speak_start JSON, >=1 binary PCM
+    frame, then speak_end — Jarvis speaking OUTSIDE a voice turn."""
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setattr(server_mod, "get_pipeline", lambda: FakePipeline())
+    hud = _FakeHud()
+    server_mod.WS_CLIENTS.add(hud)
+    client = TestClient(server_mod.app)
+    try:
+        r = client.post("/api/say", json={"text": "Sir, the build finished.", "priority": "high"})
+    finally:
+        server_mod.WS_CLIENTS.discard(hud)
+
+    assert r.status_code == 200
+    body = r.json()
+    assert body["spoke"] is True and body["sent_to"] == 1
+    types = [e["type"] for e in hud.events]
+    assert types[0] == "speak_start" and types[-1] == "speak_end"
+    assert hud.events[0]["priority"] == "high"
+    assert hud.events[0]["text"] == "Sir, the build finished."
+    assert hud.audio >= 1  # PCM frames were broadcast
+
+
+def test_proactive_say_with_panel_broadcasts_panel(no_token, server_mod, monkeypatch):
+    monkeypatch.setattr(server_mod, "get_pipeline", lambda: FakePipeline())
+    hud = _FakeHud()
+    server_mod.WS_CLIENTS.add(hud)
+    client = TestClient(server_mod.app)
+    try:
+        r = client.post("/api/say", json={
+            "text": "Pulling up the feed.",
+            "panel": {"media": "iframe", "src": "https://example.com", "title": "FEED"},
+        })
+    finally:
+        server_mod.WS_CLIENTS.discard(hud)
+    assert r.status_code == 200
+    types = [e["type"] for e in hud.events]
+    assert "summon_panel" in types  # panel broadcast alongside speech
+
+
+def test_proactive_say_rejects_non_http_panel(no_token, server_mod, monkeypatch):
+    """Security: a javascript:/attribute-breakout panel src is NOT broadcast."""
+    monkeypatch.setattr(server_mod, "get_pipeline", lambda: FakePipeline())
+    hud = _FakeHud()
+    server_mod.WS_CLIENTS.add(hud)
+    client = TestClient(server_mod.app)
+    try:
+        r = client.post("/api/say", json={
+            "text": "test",
+            "panel": {"media": "iframe", "src": "javascript:alert(1)", "title": "x"},
+        })
+    finally:
+        server_mod.WS_CLIENTS.discard(hud)
+    assert r.status_code == 200
+    types = [e["type"] for e in hud.events]
+    assert "summon_panel" not in types  # invalid src -> panel suppressed server-side
