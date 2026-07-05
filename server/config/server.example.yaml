@@ -26,6 +26,12 @@ hermes:
 
 stt:
   model: small.en           # LOCAL model (fallback if remote configured; primary otherwise)
+  # Transcription language. Empty/unset = auto-detect (recommended for
+  # multilingual models like "small"/"medium"/"large-v3"). Set to an explicit
+  # code (e.g. "en", "pt", "es") to force one language — useful with a
+  # single-language model like "small.en", or if short utterances confuse
+  # auto-detection. Was hardcoded to "en" prior to this option existing.
+  language: ""
   device: cpu
   compute_type: int8
   sample_rate: 16000
@@ -59,6 +65,12 @@ server:
   dashboard_proxy:           # TLS reverse proxy so the HUD can iframe the Hermes dashboard
     port: 9443
     target: http://127.0.0.1:9119
+    # Set this if you terminate TLS with an external reverse proxy (Caddy,
+    # nginx, Traefik...) instead of this server's own tls_ports/dashboard_proxy
+    # — e.g. because the Hermes dashboard is already fronted elsewhere. The
+    # HUD's VIEWS panel (Kanban/Dashboard/Chat buttons) will use this URL
+    # instead of the hardcoded https://<same-host>:<dashboard_proxy.port>.
+    # external_url: https://dashboard.example.com
 
 security:
   hud_token_env: JARVIS_HUD_TOKEN   # set in ~/.hermes/.env; unset = auth disabled

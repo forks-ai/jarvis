@@ -44,6 +44,9 @@ For the HUD's quota bar, give the key the **User → Read** permission.
 ```bash
 cd server
 python3 -m venv .venv
+# CPU-only torch/torchaudio first — see README's "Install" section for why
+# (plain `pip install torch` pulls several GB of unused CUDA packages).
+.venv/bin/pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
 .venv/bin/pip install fastapi uvicorn requests pyyaml numpy anthropic \
     RealtimeSTT faster-whisper silero-vad websockets psutil
 cp config/server.example.yaml config/server.yaml

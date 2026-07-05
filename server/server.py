@@ -308,7 +308,14 @@ class VoicePipelineServer:
             device=cfg["stt"].get("device", "cpu"),
             compute_type=cfg["stt"].get("compute_type", "int8"),
             sample_rate=int(cfg["stt"].get("sample_rate", 16000)),
-            language="en",
+            # Was hardcoded to "en" regardless of the configured (often
+            # multilingual) model, silently mistranscribing any other spoken
+            # language. Now configurable via stt.language in config.yaml (any
+            # RealtimeSTT/Whisper language code, e.g. "pt", "es"); if unset,
+            # defaults to "" — RealtimeSTT's own auto-detect, matching what a
+            # multilingual model is actually for instead of silently forcing
+            # English.
+            language=cfg["stt"].get("language") or "",
             beam_size=1,
             faster_whisper_vad_filter=False,
             no_log_file=True,
@@ -1150,6 +1157,42 @@ async def start_scheduler() -> None:
     if cfg.get("enabled") and (cfg.get("schedule") or []):
         asyncio.get_running_loop().create_task(_scheduler_loop())
         print(f"Proactive scheduler started ({len(cfg['schedule'])} entries).", flush=True)
+
+
+# ------------------------------------------------- HUD live config summary
+
+@app.get("/api/config-summary")
+async def config_summary() -> JSONResponse:
+    """Active model/config summary for the HUD's "MODELS LOADOUT" panel.
+
+    Read live from config.yaml so the HUD reflects the real configuration
+    instead of hardcoded placeholder text (the panel previously always showed
+    "whisper base.en" / "ElevenLabs Flash v2.5" regardless of what was actually
+    configured). Also carries an optional dashboard-proxy override so
+    deployments that terminate TLS with an external reverse proxy (instead of
+    this server's own tls_ports + dashboard_proxy) can point the HUD's VIEWS
+    panel at the right URL instead of the hardcoded same-host :dashboard_proxy
+    port.
+    """
+    llm_cfg = CFG.get("llm") or {}
+    stt_cfg = CFG.get("stt") or {}
+    voice_cfg = CFG.get("voice") or {}
+    dash_cfg = ((CFG.get("server") or {}).get("dashboard_proxy")) or {}
+
+    brain = "hermes-agent" if llm_cfg.get("provider", "hermes") == "hermes" \
+        else f"{llm_cfg.get('provider')} (fallback)"
+
+    return JSONResponse({
+        "brain": brain,
+        "stt_model": stt_cfg.get("model", "?"),
+        "stt_language": stt_cfg.get("language") or "auto",
+        "tts_model": voice_cfg.get("model", "?"),
+        "fallback_model": llm_cfg.get("model", "?"),
+        # None unless the deployment sets server.dashboard_proxy.external_url;
+        # the HUD falls back to its existing same-host:port default when null.
+        "dashboard_proxy_url": dash_cfg.get("external_url"),
+        "dashboard_proxy_port": dash_cfg.get("port"),
+    })
 
 
 _WORKER_CACHE: dict = {"ts": 0.0, "data": [], "refreshing": False}

@@ -110,6 +110,13 @@ hermes gateway   # or set up its LaunchAgent / service
 git clone https://github.com/YOURNAME/jarvis-hermes-hud
 cd jarvis-hermes-hud/server
 python3 -m venv .venv
+# CPU-only torch/torchaudio FIRST: a plain `pip install torch` pulls the
+# default CUDA build (several GB of nvidia-*/triton packages) even though
+# stt.device is "cpu" and this server has no GPU inference path — installing
+# the CPU wheel first satisfies RealtimeSTT's torch dependency before pip
+# would otherwise reach for the CUDA default. Skip this line if you actually
+# have an NVIDIA GPU and want CUDA-accelerated STT.
+.venv/bin/pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
 .venv/bin/pip install fastapi uvicorn requests pyyaml numpy anthropic \
     RealtimeSTT faster-whisper silero-vad websockets psutil
 cp config/server.example.yaml config/server.yaml   # edit: your ElevenLabs voice_id etc.
