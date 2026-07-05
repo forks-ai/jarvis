@@ -88,6 +88,15 @@ def with_token(monkeypatch, server_mod):
     return server_mod
 
 
+@pytest.fixture(autouse=True)
+def _clean_ws_clients(server_mod):
+    """WS_CLIENTS is a module global; isolate it so a leaked fake HUD from one
+    test can't inflate another's broadcast count."""
+    server_mod.WS_CLIENTS.clear()
+    yield
+    server_mod.WS_CLIENTS.clear()
+
+
 @pytest.fixture()
 def client(server_mod):
     """TestClient for the main voice/HUD app (no lifespan -> no STT warm)."""

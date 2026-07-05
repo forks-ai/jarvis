@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 """End-to-end voice pipeline test: stream a WAV through the WS, print events."""
-import asyncio, json, sys, wave
+import asyncio, json, os, sys, wave
 
 import websockets
 
 WAV = sys.argv[1]
 CONV = sys.argv[2] if len(sys.argv) > 2 else "jarvis-debug"
 URL = "ws://127.0.0.1:8765/ws"
+_TOK = os.environ.get("JARVIS_HUD_TOKEN", "")
+if _TOK:  # server requires the token for Origin-less clients when one is set
+    URL += "?token=" + _TOK
 
 
 async def main():

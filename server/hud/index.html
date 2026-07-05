@@ -183,6 +183,12 @@ body.booted header{animation:panelIn .4s backwards}
   animation:holoBodyIn .3s steps(3) .35s forwards; overflow:hidden; background:#050b14}
 @keyframes holoBodyIn{0%{opacity:0}45%{opacity:.35}70%{opacity:.85}100%{opacity:1}}
 .holoContent{width:100%; height:100%; border:0; object-fit:contain; background:#050b14}
+.holoData{display:flex; flex-direction:column; padding:14px 16px; color:var(--txt); overflow:auto}
+.holoDataLabels{display:flex; justify-content:space-between; font-size:10px; color:var(--txt-dim); margin-top:6px; gap:4px}
+.holoDataLabels span{flex:1; text-align:center; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+.holoKV{gap:2px; justify-content:flex-start}
+.holoKV .kv{display:flex; justify-content:space-between; font-size:15px; padding:4px 0; border-bottom:1px solid var(--line)}
+.holoKV .kv b{color:var(--teal); font-weight:600}
 .holoHex{position:absolute; inset:30px 8px 8px 8px; pointer-events:none; opacity:.5;
   background:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='28' height='32'%3E%3Cpath d='M14 1 27 8.5v15L14 31 1 23.5v-15z' fill='none' stroke='%2300e5ff' stroke-opacity='.3'/%3E%3C/svg%3E");
   animation:holoHexOut .4s ease .65s forwards}
@@ -369,6 +375,9 @@ let level=0, turns=0;
 
 const $=id=>document.getElementById(id);
 const feed=$("feed");
+/* HTML-escape for any server/agent-supplied string rendered via innerHTML (XSS guard) */
+const escHtml=s=>String(s??"").replace(/[<>&"']/g,c=>({"<":"&lt;",">":"&gt;","&":"&amp;",'"':"&quot;","'":"&#39;"}[c]));
+const isHttpUrl=u=>/^https?:\/\//i.test(String(u||""));
 
 /* ============================== clock ============================== */
 setInterval(()=>{const d=new Date();$("clock").textContent=d.toTimeString().slice(0,8)},500);
@@ -490,6 +499,15 @@ function connect(){
     let e; try{e=JSON.parse(ev.data)}catch{return}
     if(e.type==="summon_panel"){ summonPanel(e); }
     else if(e.type==="dismiss_panels"){ dismissAllPanels(); }
+    else if(e.type==="speak_start"){        // proactive (unprompted) speech
+      if(e.priority==="high") stopPlayback();   // barge-in over current audio
+      ensureCtx();
+      if(e.text) addMsg("jarvis", e.text);      // subtitle (textContent — XSS-safe)
+      setState("speaking","INCOMING");
+    }
+    else if(e.type==="speak_end"){
+      setTimeout(()=>{ if(state!=="listening"&&state!=="thinking")setState("standby","STANDBY"); },400);
+    }
     else if(e.type==="partial_transcript"){ showLive(e.text); }
     else if(e.type==="transcript"){ clearLive(); if(e.text)addMsg("you",e.text); }
     else if(e.type==="run_started"){ currentRun=e.run_id; showStop(true); }
@@ -760,23 +778,60 @@ function embedURL(src){
   if(yt) return `https://www.youtube.com/embed/${yt[1]}?autoplay=1`;
   return src;
 }
+/* ---- inline data-panel renderers (no libs, CSP-safe) ---- */
+function _num(v){ const n=typeof v==="object"&&v?Number(v.value):Number(v); return isFinite(n)?n:0; }
+function _lbl(v){ return escHtml(typeof v==="object"&&v?(v.label??""):""); }
+function renderChart(o){
+  const data=Array.isArray(o.data)?o.data.slice(0,60):[];
+  if(!data.length) return `<div class="holoContent holoData">no data</div>`;
+  const vals=data.map(_num), max=Math.max(1,...vals.map(Math.abs));
+  const type=o.chart_type==="line"?"line":"bar", W=100, H=60;
+  let body="";
+  if(type==="bar"){
+    const bw=W/data.length;
+    body=vals.map((v,i)=>{
+      const h=Math.max(1,Math.abs(v)/max*H), x=i*bw+bw*0.15, w=bw*0.7;
+      return `<rect x="${x.toFixed(2)}" y="${(H-h).toFixed(2)}" width="${w.toFixed(2)}" height="${h.toFixed(2)}" fill="var(--cyan)" opacity="0.8"/>`;
+    }).join("");
+  }else{
+    const step=data.length>1?W/(data.length-1):W;
+    const pts=vals.map((v,i)=>`${(i*step).toFixed(2)},${(H-Math.abs(v)/max*H).toFixed(2)}`).join(" ");
+    body=`<polyline points="${pts}" fill="none" stroke="var(--cyan)" stroke-width="1.5" vector-effect="non-scaling-stroke"/>`;
+  }
+  const labels=data.map(d=>_lbl(d)).filter(Boolean);
+  return `<div class="holoContent holoData">
+    <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" style="width:100%;height:78%">
+      <line x1="0" y1="${H}" x2="${W}" y2="${H}" stroke="var(--line)" stroke-width="0.5"/>${body}</svg>
+    <div class="holoDataLabels">${labels.map(l=>`<span>${l}</span>`).join("")}</div></div>`;
+}
+function renderKV(o){
+  const rows=Array.isArray(o.items)?o.items.slice(0,30):[];
+  if(!rows.length) return `<div class="holoContent holoData">no data</div>`;
+  return `<div class="holoContent holoData holoKV">${rows.map(r=>
+    `<div class="kv"><span>${escHtml(r.label??"")}</span><b>${escHtml(String(r.value??""))}</b></div>`).join("")}</div>`;
+}
 let lastSummon={key:"",t:0};
 function summonPanel(opts){
   const o=opts||{};
+  const kind=["chart","glance","status"].includes(o.kind)?o.kind:"";
   const media=o.media||o.type||"iframe", src=o.src||"", title=(o.title||"INCOMING FEED").toUpperCase();
   // dedupe: stale WS reconnects can deliver the same broadcast multiple times
-  const key=media+"|"+src+"|"+title;
+  const key=kind+"|"+media+"|"+src+"|"+title;
   if(key===lastSummon.key && Date.now()-lastSummon.t<8000) return null;
   lastSummon={key, t:Date.now()};
+  // src must be an http(s) URL; reject javascript:/data:/attribute-breakout payloads
+  if(!kind && src && !isHttpUrl(src)){ addActivity("blocked panel (invalid src)"); return null; }
   const position=["left","right","center"].includes(o.position)?o.position:"center";
   const p=document.createElement("div");
   p.className="holo pos-"+position; p.dataset.fx="hologram";
   let inner="";
-  const esrc=encodeURI(src);
-  if(media==="image") inner=`<img class="holoContent" src="${esrc}" alt="">`;
+  const esrc=encodeURI(src);                       // escapes quotes/space/angle brackets
+  if(kind==="chart") inner=renderChart(o);
+  else if(kind==="glance"||kind==="status") inner=renderKV(o);
+  else if(media==="image") inner=`<img class="holoContent" src="${esrc}" alt="">`;
   else if(media==="video" && !/youtube|youtu\.be/.test(src))
     inner=`<video class="holoContent" src="${esrc}" controls autoplay playsinline></video>`;
-  else inner=`<iframe class="holoContent" src="${embedURL(src)}" allow="autoplay; fullscreen; encrypted-media"></iframe>`;
+  else inner=`<iframe class="holoContent" src="${encodeURI(embedURL(src))}" allow="autoplay; fullscreen; encrypted-media"></iframe>`;
   p.innerHTML=`
     <svg class="holoFrame" preserveAspectRatio="none" viewBox="0 0 100 100">
       <rect x="0.5" y="0.5" width="99" height="99" pathLength="100" vector-effect="non-scaling-stroke"/>
@@ -785,7 +840,7 @@ function summonPanel(opts){
       <path d="M99.5 92 V99.5 H92" vector-effect="non-scaling-stroke"/>
       <path d="M8 99.5 H0.5 V92" vector-effect="non-scaling-stroke"/>
     </svg>
-    <div class="holoBar"><span>◈ ${title}</span><span class="hx" title="dismiss">✕</span></div>
+    <div class="holoBar"><span>◈ ${escHtml(title)}</span><span class="hx" title="dismiss">✕</span></div>
     <div class="holoContentWrap">${inner}</div>
     <div class="holoHex"></div>
     <div class="holoScan"></div>

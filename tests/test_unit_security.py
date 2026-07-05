@@ -101,6 +101,38 @@ def test_proxy_blocks_unknown_get_paths(server_mod, path):
     assert server_mod._proxy_allowed("GET", path) is False
 
 
+# --------------------------------------------------------------------------- #
+# _panel_payload — panel spec normalisation / clamping                         #
+# --------------------------------------------------------------------------- #
+def test_panel_payload_media_defaults(server_mod):
+    out = server_mod._panel_payload({"media": "image", "src": "http://x", "title": "t", "position": "left"})
+    assert out["media"] == "image" and out["position"] == "left"
+    assert "kind" not in out
+
+
+def test_panel_payload_clamps_bad_media_and_position(server_mod):
+    out = server_mod._panel_payload({"media": "evil", "position": "up", "title": "x"})
+    assert out["media"] == "iframe" and out["position"] == "center"
+
+
+def test_panel_payload_chart_passthrough_and_bounds(server_mod):
+    out = server_mod._panel_payload({"kind": "chart", "title": "T",
+                                     "data": list(range(100)), "chart_type": "line"})
+    assert out["kind"] == "chart" and out["chart_type"] == "line"
+    assert len(out["data"]) == 60  # payload size bounded
+
+
+def test_panel_payload_glance_items_bounded(server_mod):
+    items = [{"label": str(i), "value": i} for i in range(50)]
+    out = server_mod._panel_payload({"kind": "glance", "title": "S", "items": items})
+    assert len(out["items"]) == 30
+
+
+def test_panel_payload_rejects_unknown_kind(server_mod):
+    out = server_mod._panel_payload({"kind": "evil", "title": "T"})
+    assert "kind" not in out
+
+
 def test_proxy_post_only_v1_responses(server_mod):
     assert server_mod._proxy_allowed("POST", "/v1/responses") is True
     assert server_mod._proxy_allowed("POST", "/api/sessions") is False
@@ -135,6 +167,17 @@ def test_request_authed_accepts_cookie(with_token):
 # --------------------------------------------------------------------------- #
 # _ws_allowed — WebSocket origin + token gate                                  #
 # --------------------------------------------------------------------------- #
+def test_ws_originless_requires_token_when_set(with_token):
+    # F2 fix: native (Origin-less) clients must supply the token when one is set.
+    assert with_token._ws_allowed(make_ws()) is False
+    assert with_token._ws_allowed(make_ws(query={"token": "s3cr3t-token"})) is True
+    assert with_token._ws_allowed(make_ws(cookies={"jarvis_token": "s3cr3t-token"})) is True
+
+
+def test_ws_originless_open_when_no_token(no_token):
+    assert no_token._ws_allowed(make_ws()) is True
+
+
 def test_ws_browser_origin_must_be_allowlisted(with_token):
     evil = make_ws(headers={"origin": "https://evil.example.com"})
     assert with_token._ws_allowed(evil) is False

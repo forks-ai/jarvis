@@ -12,6 +12,7 @@ import argparse
 import asyncio
 import json
 import math
+import os
 import queue
 import signal
 import struct
@@ -276,6 +277,8 @@ async def wake_word_loop(
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Hermes LAN voice client for Windows")
     parser.add_argument("--server", default=DEFAULT_SERVER, help=f"WebSocket server URL, default {DEFAULT_SERVER}")
+    parser.add_argument("--token", default=os.environ.get("JARVIS_HUD_TOKEN", ""),
+                        help="HUD auth token (or set JARVIS_HUD_TOKEN); required if the server has one configured")
     parser.add_argument("--input-device", type=int, default=None, help="sounddevice input device index")
     parser.add_argument("--output-device", type=int, default=None, help="sounddevice output device index")
     parser.add_argument("--list-devices", action="store_true", help="list Windows audio devices and exit")
@@ -320,9 +323,13 @@ async def main_async() -> int:
         print("Then retry with: python client.py --input-device DEVICE_INDEX")
         return 2
 
+    server_url = args.server
+    if args.token and "token=" not in server_url:
+        server_url += ("&" if "?" in server_url else "?") + "token=" + args.token
+
     try:
-        async with websockets.connect(args.server, max_size=None) as ws:
-            print(f"Connected to {args.server}")
+        async with websockets.connect(server_url, max_size=None) as ws:
+            print(f"Connected to {server_url}")
             with input_stream:
                 player = asyncio.create_task(playback_worker(ws, args.output_device, stop_event, turn_complete))
                 if args.push_to_talk:
